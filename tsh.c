@@ -41,7 +41,6 @@ char prompt[] = "tsh> "; /* command line prompt (DO NOT CHANGE) */
 int verbose = 0;         /* if true, print additional output */
 int nextjid = 1;         /* next job ID to allocate */
 char sbuf[MAXLINE];      /* for composing sprintf messages */
-sigset_t mask, prev, all_mask;
 int is_fg_finished;
 
 struct job_t
@@ -174,20 +173,22 @@ void eval(char *cmdline)
 {
     char *argv[MAXARGS];
     int is_BG;
+    sigset_t mask, prev, all_mask;
 
     is_BG = parseline(cmdline, argv);
     if (builtin_cmd(argv))
         return;
 
     Signal(SIGCHLD, sigchld_handler);
-    sigemptyset(&mask);
     sigfillset(&all_mask);
+    sigemptyset(&mask);
     sigaddset(&mask, SIGCHLD);
     sigprocmask(SIG_BLOCK, &mask, &prev);
     pid_t pid = fork();
     if (pid == 0) // child
     {
         sigprocmask(SIG_SETMASK, &prev, NULL);
+        setpgid(0, 0);
         if (execve(argv[0], argv, environ) < 0)
         {
             printf("command not found.\n");
@@ -196,8 +197,8 @@ void eval(char *cmdline)
     }
     else // parent
     {
-        sigprocmask(SIG_BLOCK, &all_mask, NULL);
 
+        sigprocmask(SIG_BLOCK, &all_mask, NULL);
         if (is_BG)
         {
             addjob(jobs, pid, BG, cmdline);
@@ -207,9 +208,7 @@ void eval(char *cmdline)
         {
             addjob(jobs, pid, FG, cmdline);
         }
-
         sigprocmask(SIG_SETMASK, &prev, NULL);
-
         if (!is_BG)
             waitfg(pid);
     }
@@ -316,7 +315,7 @@ void do_bgfg(char **argv)
  */
 void waitfg(pid_t pid)
 {
-    while(pid==fgpid(jobs))
+    while (pid == fgpid(jobs))
         sleep(1);
     return;
 }
@@ -334,7 +333,29 @@ void waitfg(pid_t pid)
  */
 void sigchld_handler(int sig)
 {
-    return;
+    int olderrno = errno;
+    sigset_t prev, all_mask;
+    pid_t deleted_pid;
+    int status;
+    sigfillset(&all_mask);
+
+    while ((deleted_pid = waitpid(-1, &status, WNOHANG | WUNTRACED)) > 0)
+    {
+        sigprocmask(SIG_BLOCK, &all_mask, &prev);
+        if (WIFEXITED(status)) // child has terminated
+        {
+            sigprocmask(SIG_BLOCK, &all_mask, &prev);
+            deletejob(jobs, deleted_pid);
+        }
+        else if (WIFSIGNALED(status)) // child has been interrupted
+        {
+            printf("Job [%d] (%d) terminated by signal %d\n", pid2jid(deleted_pid), deleted_pid, SIGINT);
+            deletejob(jobs, deleted_pid);
+        }
+        sigprocmask(SIG_SETMASK, &prev, NULL);
+    }
+
+    errno = olderrno;
 }
 
 /*
@@ -344,7 +365,12 @@ void sigchld_handler(int sig)
  */
 void sigint_handler(int sig)
 {
-    return;
+    int olderrno = errno;
+    if (fgpid(jobs))
+    {
+        kill(-fgpid(jobs), SIGINT);
+    }
+    errno = olderrno;
 }
 
 /*

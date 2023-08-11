@@ -191,7 +191,7 @@ void eval(char *cmdline)
         setpgid(0, 0);
         if (execve(argv[0], argv, environ) < 0)
         {
-            printf("command not found.\n");
+            printf("%s: Command not found\n", argv[0]);
             exit(0);
         }
     }
@@ -305,9 +305,57 @@ int builtin_cmd(char **argv)
 /*
  * do_bgfg - Execute the builtin bg and fg commands
  */
+
 void do_bgfg(char **argv)
 {
-    return;
+    if (argv[1] == NULL)
+    {
+        printf("%s command requires PID or %%jobid argument\n", argv[0]);
+        return;
+    }
+    char *num = argv[1];
+    pid_t current_pid = 0;
+    if (num[0] == '%')
+    {
+        int jid;
+        if (!(jid = atoi(num + 1)))
+        {
+            printf("%s: argument must be a PID or %%jobid\n", argv[0]);
+            return;
+        }
+        if (!getjobjid(jobs, jid))
+        {
+            printf("%s: No such job\n", argv[1]);
+            return;
+        }
+        current_pid = getjobjid(jobs, jid)->pid;
+    }
+    else
+    {
+        if (!(current_pid = atoi(num)))
+        {
+            printf("%s: argument must be a PID or %%jobid\n", argv[0]);
+            return;
+        }
+    }
+    struct job_t *current_job = getjobpid(jobs, current_pid);
+    if (current_job == NULL)
+    {
+        printf("(%d): No such process\n", current_pid);
+        return;
+    }
+    if (!strcmp(argv[0], "bg"))
+    {
+        kill(-current_pid, SIGCONT);
+        current_job->state = BG;
+        printf("[%d] (%d) %s", pid2jid(current_pid), current_pid, current_job->cmdline);
+    }
+    else if (!strcmp(argv[0], "fg"))
+    {
+        kill(-current_pid, SIGCONT);
+        current_job->state = FG;
+        waitfg(current_pid);
+    }
 }
 
 /*
@@ -355,7 +403,7 @@ void sigchld_handler(int sig)
         else if (WIFSTOPPED(status)) // child has been suspended
         {
             printf("Job [%d] (%d) stopped by signal %d\n", pid2jid(child_pid), child_pid, SIGTSTP);
-            getjobpid(jobs,child_pid)->state=ST;
+            getjobpid(jobs, child_pid)->state = ST;
         }
         sigprocmask(SIG_SETMASK, &prev, NULL);
     }

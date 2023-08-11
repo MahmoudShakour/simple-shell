@@ -335,22 +335,27 @@ void sigchld_handler(int sig)
 {
     int olderrno = errno;
     sigset_t prev, all_mask;
-    pid_t deleted_pid;
+    pid_t child_pid;
     int status;
     sigfillset(&all_mask);
 
-    while ((deleted_pid = waitpid(-1, &status, WNOHANG | WUNTRACED)) > 0)
+    while ((child_pid = waitpid(-1, &status, WNOHANG | WUNTRACED)) > 0)
     {
         sigprocmask(SIG_BLOCK, &all_mask, &prev);
         if (WIFEXITED(status)) // child has terminated
         {
             sigprocmask(SIG_BLOCK, &all_mask, &prev);
-            deletejob(jobs, deleted_pid);
+            deletejob(jobs, child_pid);
         }
         else if (WIFSIGNALED(status)) // child has been interrupted
         {
-            printf("Job [%d] (%d) terminated by signal %d\n", pid2jid(deleted_pid), deleted_pid, SIGINT);
-            deletejob(jobs, deleted_pid);
+            printf("Job [%d] (%d) terminated by signal %d\n", pid2jid(child_pid), child_pid, SIGINT);
+            deletejob(jobs, child_pid);
+        }
+        else if (WIFSTOPPED(status)) // child has been suspended
+        {
+            printf("Job [%d] (%d) stopped by signal %d\n", pid2jid(child_pid), child_pid, SIGTSTP);
+            getjobpid(jobs,child_pid)->state=ST;
         }
         sigprocmask(SIG_SETMASK, &prev, NULL);
     }
@@ -366,10 +371,9 @@ void sigchld_handler(int sig)
 void sigint_handler(int sig)
 {
     int olderrno = errno;
-    if (fgpid(jobs))
-    {
-        kill(-fgpid(jobs), SIGINT);
-    }
+    if (!fgpid(jobs))
+        return;
+    kill(-fgpid(jobs), SIGINT);
     errno = olderrno;
 }
 
@@ -380,7 +384,11 @@ void sigint_handler(int sig)
  */
 void sigtstp_handler(int sig)
 {
-    return;
+    int olderrno = errno;
+    if (!fgpid(jobs))
+        return;
+    kill(-fgpid(jobs), SIGTSTP);
+    errno = olderrno;
 }
 
 /*********************
